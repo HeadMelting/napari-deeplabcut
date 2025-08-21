@@ -1111,6 +1111,21 @@ class KeypointControls(QWidget):
             self._trail_cb.setEnabled(True)
             self._matplotlib_cb.setEnabled(True)
 
+            # initialize text colors based on visibility if present
+            try:
+                _update_text_colors_for_layer(layer)
+            except Exception:
+                pass
+
+            # keep text colors in sync when properties change
+            try:
+                layer.events.properties.connect(lambda e=None, l=layer: _update_text_colors_for_layer(l))
+            except Exception:
+                try:
+                    layer.events.features.connect(lambda e=None, l=layer: _update_text_colors_for_layer(l))
+                except Exception:
+                    pass
+
             # Hide the color pickers, as colormaps are strictly defined by users
             controls = self.viewer.window.qt_viewer.dockLayerControls
             point_controls = controls.widget().widgets[layer]
@@ -1277,6 +1292,59 @@ def toggle_edge_color(layer):
     layer.edge_width = np.bitwise_xor(layer.edge_width, 2)
 
 
+def _update_text_colors_for_layer(layer: Points):
+    n = len(layer.data) if hasattr(layer, "data") else 0
+    if n == 0:
+        return
+    # default white
+    colors = np.ones((n, 4), dtype=float)
+    if "visibility" in layer.properties:
+        vis = np.asarray(layer.properties["visibility"], dtype=int)
+        if len(vis) < n:
+            vis = np.concatenate([vis, np.full(n - len(vis), 2, dtype=int)])
+        vis = vis[:n]
+        # map: 0->gray, 1->orange, 2->white
+        gray = np.array([0.7, 0.7, 0.7, 1.0])
+        orange = np.array([1.0, 0.6, 0.0, 1.0])
+        white = np.array([1.0, 1.0, 1.0, 1.0])
+        colors[:] = white
+        colors[vis == 0] = gray
+        colors[vis == 1] = orange
+    face_prop = "id" if layer.properties.get("id", np.array([""]))[0] else "label"
+    string = "{id}–{label} (v={visibility})" if face_prop == "id" else "{label} (v={visibility})"
+    layer.text = {"string": string, "color": colors}
+
+
+@Points.bind_key("Alt-0")
+def set_visibility_0(layer):
+    if "visibility" in layer.properties and len(layer.selected_data):
+        vis = layer.properties["visibility"].copy()
+        for idx in layer.selected_data:
+            vis[idx] = 0
+        layer.properties["visibility"] = vis
+        _update_text_colors_for_layer(layer)
+
+
+@Points.bind_key("Alt-1")
+def set_visibility_1(layer):
+    if "visibility" in layer.properties and len(layer.selected_data):
+        vis = layer.properties["visibility"].copy()
+        for idx in layer.selected_data:
+            vis[idx] = 1
+        layer.properties["visibility"] = vis
+        _update_text_colors_for_layer(layer)
+
+
+@Points.bind_key("Alt-2")
+def set_visibility_2(layer):
+    if "visibility" in layer.properties and len(layer.selected_data):
+        vis = layer.properties["visibility"].copy()
+        for idx in layer.selected_data:
+            vis[idx] = 2
+        layer.properties["visibility"] = vis
+        _update_text_colors_for_layer(layer)
+
+
 class DropdownMenu(QComboBox):
     def __init__(self, labels: Sequence[str], parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -1317,6 +1385,92 @@ class KeypointsDropdownMenu(QWidget):
         layout2 = QVBoxLayout()
         for menu in self.menus.values():
             layout2.addWidget(menu)
+
+        # Visibility radio buttons for current keypoint selection
+        vis_group = QGroupBox("Visibility")
+        vis_layout = QHBoxLayout()
+        self._vis_btns = QButtonGroup(self)
+        self._vis_btns.setExclusive(True)
+        self._vis_btn0 = QRadioButton("0")
+        self._vis_btn1 = QRadioButton("1")
+        self._vis_btn2 = QRadioButton("2")
+        self._vis_btns.addButton(self._vis_btn0, 0)
+        self._vis_btns.addButton(self._vis_btn1, 1)
+        self._vis_btns.addButton(self._vis_btn2, 2)
+        vis_layout.addWidget(self._vis_btn0)
+        vis_layout.addWidget(self._vis_btn1)
+        vis_layout.addWidget(self._vis_btn2)
+        vis_group.setLayout(vis_layout)
+        layout2.addWidget(vis_group)
+
+        def _apply_visibility(id_):
+            layer = self.store.layer
+            if "visibility" not in layer.properties:
+                return
+            # Build full-length array
+            n = len(layer.data)
+            vis_old = layer.properties["visibility"]
+            vis = np.empty(n, dtype=int)
+            if len(vis_old) == n:
+                vis[:] = vis_old
+            else:
+                vis[: len(vis_old)] = vis_old
+                vis[len(vis_old) :] = 2
+            # If selection exists: apply to selected
+            if len(layer.selected_data):
+                for idx in layer.selected_data:
+                    vis[idx] = id_
+            else:
+                # Apply to current keypoint in current frame if present
+                mask = self.store.current_mask
+                if np.any(mask):
+                    labels = layer.properties["label"][mask]
+                    ids = layer.properties["id"][mask]
+                    target = keypoints.Keypoint(self.store.current_label, self.store.current_id)
+                    for i, (lb, idv) in enumerate(zip(labels, ids)):
+                        if keypoints.Keypoint(lb, idv) == target:
+                            vis[np.flatnonzero(mask)[i]] = id_
+                            break
+            layer.properties = {**layer.properties, "visibility": vis}
+
+        self._vis_btns.idClicked.connect(_apply_visibility)
+
+        def _sync_visibility_buttons(event=None):
+            layer = self.store.layer
+            # Determine visibility of selected point(s) or current keypoint
+            id_to_check = None
+            if "visibility" in layer.properties:
+                if len(layer.selected_data) == 1:
+                    idx = next(iter(layer.selected_data))
+                    id_to_check = int(layer.properties["visibility"][idx])
+                else:
+                    # current keypoint in current frame
+                    mask = self.store.current_mask
+                    labels = layer.properties["label"][mask]
+                    ids = layer.properties["id"][mask]
+                    target = keypoints.Keypoint(self.store.current_label, self.store.current_id)
+                    for i, (lb, idv) in enumerate(zip(labels, ids)):
+                        if keypoints.Keypoint(lb, idv) == target:
+                            id_to_check = int(layer.properties["visibility"][np.flatnonzero(mask)[i]])
+                            break
+            # Update buttons
+            for id_, btn in enumerate([self._vis_btn0, self._vis_btn1, self._vis_btn2]):
+                btn.blockSignals(True)
+                btn.setChecked(id_to_check == id_)
+                btn.blockSignals(False)
+
+        # keep radio in sync when selection or current keypoint changes
+        try:
+            self.store.layer.events.selection.connect(_sync_visibility_buttons)
+        except AttributeError:
+            # Backward/forward compatibility across napari versions
+            try:
+                self.store.layer.events.select.connect(_sync_visibility_buttons)
+            except Exception:
+                pass
+        self.store.layer.events.current_properties.connect(_sync_visibility_buttons)
+        _sync_visibility_buttons()
+
         group_box.setLayout(layout2)
         layout1.addWidget(group_box)
         self.setLayout(layout1)

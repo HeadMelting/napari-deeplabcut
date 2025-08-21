@@ -91,6 +91,16 @@ class KeypointStore:
         self._keypoints = []
         self.layer = layer
         self.viewer.dims.set_current_step(0, 0)
+        # Initialize visibility property for all existing points if missing
+        if "visibility" not in self.layer.properties:
+            n = len(self.layer.data)
+            if n:
+                self.layer.properties["visibility"] = np.full(n, 2, dtype=int)
+            else:
+                self.layer.current_properties = {
+                    **self.layer.current_properties,
+                    "visibility": np.asarray([2], dtype=int),
+                }
 
     @property
     def layer(self):
@@ -192,11 +202,43 @@ class KeypointStore:
 
 def _add(store, coord):
     if store.current_keypoint not in store.annotated_keypoints:
+        # Append point to data
         store.layer.data = np.append(
             store.layer.data,
             np.atleast_2d(coord),
             axis=0,
         )
+        # Build per-point properties of exact length new_n
+        new_n = len(store.layer.data)
+        old_props = store.layer.properties
+        cur = store.layer.current_properties
+        # Labels
+        old_labels = old_props.get("label")
+        labels_dtype = cur["label"].dtype
+        labels = np.empty(new_n, dtype=labels_dtype)
+        if old_labels is not None and len(old_labels) > 0:
+            labels[: len(old_labels)] = old_labels
+        labels[-1] = cur["label"][0]
+        # IDs
+        old_ids = old_props.get("id")
+        ids_dtype = cur["id"].dtype
+        ids = np.empty(new_n, dtype=ids_dtype)
+        if old_ids is not None and len(old_ids) > 0:
+            ids[: len(old_ids)] = old_ids
+        ids[-1] = cur["id"][0]
+        # Visibility
+        vis_default = np.asarray([2], dtype=int)
+        vis_src = cur.get("visibility", vis_default)
+        old_vis = old_props.get("visibility")
+        vis = np.empty(new_n, dtype=int)
+        if old_vis is not None and len(old_vis) > 0:
+            vis[: len(old_vis)] = old_vis
+        vis[-1] = int(vis_src[0])
+        store.layer.properties = {
+            "label": labels,
+            "id": ids,
+            "visibility": vis,
+        }
     elif store.layer.metadata["controls"]._label_mode is LabelMode.QUICK:
         ind = store.annotated_keypoints.index(store.current_keypoint)
         data = store.layer.data

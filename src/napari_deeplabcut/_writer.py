@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pandas as pd
 import yaml
+import numpy as np
 from napari.layers import Shapes
 from napari_builtins.io import napari_write_shapes
 from skimage.io import imsave
@@ -25,7 +26,11 @@ def _form_df(points_data, metadata):
     temp["bodyparts"] = properties["label"]
     temp["individuals"] = properties["id"]
     temp["inds"] = points_data[:, 0].astype(int)
-    temp["likelihood"] = properties["likelihood"]
+    # Attach visibility if present, default to 2 (visible)
+    visibility = properties.get("visibility")
+    if visibility is None:
+        visibility = np.full(len(temp), 2, dtype=int)
+    temp["visibility"] = visibility
     temp["scorer"] = meta["header"].scorer
     df = temp.set_index(["scorer", "individuals", "bodyparts", "inds"]).stack()
     df.index.set_names("coords", level=-1, inplace=True)
@@ -33,7 +38,23 @@ def _form_df(points_data, metadata):
     df.index.name = None
     if not properties["id"][0]:
         df = df.droplevel("individuals", axis=1)
-    df = df.reindex(meta["header"].columns, axis=1)
+    # Expand target columns to include any new coords (e.g., visibility),
+    # while respecting whether the header has an 'individuals' level.
+    header = meta["header"]
+    header_coords = header.coords or ["x", "y"]
+    df_coords = list(pd.unique(df.columns.get_level_values("coords")))
+    coords_all = list(dict.fromkeys(list(header_coords) + df_coords))
+    if "individuals" in header.columns.names:
+        target_columns = pd.MultiIndex.from_product(
+            [[header.scorer], header.individuals, header.bodyparts, coords_all],
+            names=["scorer", "individuals", "bodyparts", "coords"],
+        )
+    else:
+        target_columns = pd.MultiIndex.from_product(
+            [[header.scorer], header.bodyparts, coords_all],
+            names=["scorer", "bodyparts", "coords"],
+        )
+    df = df.reindex(target_columns, axis=1)
     # Fill unannotated rows with NaNs
     # df = df.reindex(range(len(meta['paths'])))
     # df.index = meta['paths']
@@ -50,7 +71,6 @@ def write_hdf(filename, data, metadata):
     name = metadata["name"]
     root = meta["root"]
     if "machine" in name:  # We are attempting to save refined model predictions
-        df.drop("likelihood", axis=1, level="coords", inplace=True, errors="ignore")
         header = misc.DLCHeader(df.columns)
         gt_file = ""
         for file in os.listdir(root):
@@ -74,6 +94,16 @@ def write_hdf(filename, data, metadata):
             df.columns = header.columns
             name = f"CollectedData_{new_scorer}"
     df.sort_index(inplace=True)
+    # Drop rows that have no annotations for all coords (avoid empty CSV)
+    # Keep a row if any of x, y, or visibility is not NaN for any keypoint
+    cols_coords = df.columns.get_level_values("coords")
+    keep_mask = (
+        df.loc[:, cols_coords == "x"].notna().any(axis=1)
+        | df.loc[:, cols_coords == "y"].notna().any(axis=1)
+        | df.loc[:, cols_coords == "visibility"].notna().any(axis=1)
+    )
+    if keep_mask.any():
+        df = df.loc[keep_mask]
     filename = name + ".h5"
     path = os.path.join(root, filename)
     df.to_hdf(path, key="keypoints", mode="w")

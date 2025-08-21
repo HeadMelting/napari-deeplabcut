@@ -118,6 +118,7 @@ def _populate_metadata(
     labels: Optional[Sequence[str]] = None,
     ids: Optional[Sequence[str]] = None,
     likelihood: Optional[Sequence[float]] = None,
+    visibility: Optional[Sequence[int]] = None,
     paths: Optional[List[str]] = None,
     size: Optional[int] = 8,
     pcutoff: Optional[float] = 0.6,
@@ -129,17 +130,22 @@ def _populate_metadata(
         ids = header.individuals
     if likelihood is None:
         likelihood = np.ones(len(labels))
+    if visibility is None:
+        visibility = np.full(len(labels), 2, dtype=int)
     face_color_cycle_maps = misc.build_color_cycles(header, colormap)
     face_color_prop = "id" if ids[0] else "label"
     return {
         "name": "keypoints",
-        "text": "{id}–{label}" if ids[0] else "label",
+        "text": "{id}–{label} (v={visibility})" if ids[0] else "{label} (v={visibility})",
         "properties": {
             "label": list(labels),
             "id": list(ids),
             "likelihood": likelihood,
+            "visibility": visibility,
             "valid": likelihood > pcutoff,
         },
+        # initialize neutral text color; runtime updates will recolor per visibility
+        "text": {"string": "{id}–{label} (v={visibility})" if ids[0] else "{label} (v={visibility})", "color": "white"},
         "face_color_cycle": face_color_cycle_maps[face_color_prop],
         "face_color": face_color_prop,
         "face_colormap": colormap,
@@ -185,8 +191,22 @@ def read_config(configname: str) -> List[LayerData]:
     )
     metadata["name"] = f"CollectedData_{config['scorer']}"
     metadata["ndim"] = 3
-    metadata["property_choices"] = metadata.pop("properties")
+    # Convert to property_choices for empty Points layer construction.
+    # Only include categorical fields with unique categories.
+    _ = metadata.pop("properties")
+    property_choices = {
+        "label": list(dict.fromkeys(header.bodyparts)),
+        "id": list(dict.fromkeys(header.individuals)),
+        "visibility": np.array([0, 1, 2], dtype=int),
+        "valid": [False, True],
+    }
+    metadata["property_choices"] = property_choices
     metadata["metadata"]["project"] = os.path.dirname(configname)
+    # For the empty labeling session (config path), there is no 'properties'
+    # so using edge_color="valid" would be interpreted as a color string.
+    # Override edge color to a concrete color to avoid errors.
+    metadata["edge_color"] = "black"
+    # Optional: ensure edge_color_cycle exists but won’t be used until data present
     conversion_tables = config.get("SuperAnimalConversionTables")
     if conversion_tables is not None:
         super_animal, table = conversion_tables.popitem()
@@ -236,11 +256,15 @@ def read_hdf(filename: str) -> List[LayerData]:
             )
         data[:, 0] = image_inds
         data[:, 1:] = df[["y", "x"]].to_numpy()
+        # Extract optional visibility channel if present
+        visibility_series = df.get("visibility")
+
         metadata = _populate_metadata(
             header,
             labels=df["bodyparts"],
             ids=df["individuals"],
-            likelihood=df.get("likelihood"),
+            likelihood=None,
+            visibility=visibility_series,
             paths=list(paths2inds),
             colormap=colormap,
         )

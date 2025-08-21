@@ -56,14 +56,16 @@ def merge_multiple_scorers(
     if "likelihood" in header.coords:
         # Merge annotations from multiple scorers to keep
         # detections with highest confidence
-        data = df.to_numpy().reshape((n_frames, n_scorers, -1, 3))
+        n_coords = len(header.coords)
+        like_ind = header.coords.index("likelihood")
+        data = df.to_numpy().reshape((n_frames, n_scorers, -1, n_coords))
         try:
-            idx = np.nanargmax(data[..., 2], axis=1)
+            idx = np.nanargmax(data[..., like_ind], axis=1)
         except ValueError:  # All-NaN slice encountered
-            mask = np.isnan(data[..., 2]).all(axis=1, keepdims=True)
+            mask = np.isnan(data[..., like_ind]).all(axis=1, keepdims=True)
             mask = np.broadcast_to(mask[..., None], data.shape)
             data[mask] = -1
-            idx = np.nanargmax(data[..., 2], axis=1)
+            idx = np.nanargmax(data[..., like_ind], axis=1)
             data[mask] = np.nan
         data_best = data[
             np.arange(n_frames)[:, None], idx, np.arange(data.shape[2])
