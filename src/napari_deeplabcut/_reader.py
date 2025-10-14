@@ -236,7 +236,7 @@ def read_hdf(filename: str) -> List[LayerData]:
         else:
             colormap = "Set3"
         if isinstance(temp.index, pd.MultiIndex):
-            temp.index = [os.path.join(*row) for row in temp.index]
+            temp.index = [os.path.join(*map(str, row)) for row in temp.index]
         df = (
             temp.stack(["individuals", "bodyparts"])
             .reindex(header.individuals, level="individuals")
