@@ -64,7 +64,7 @@ def get_config_reader(path):
 def csv_to_h5(csv_path):
     data = pd.read_csv(csv_path, header=list(range(3)), index_col=list(range(3)))
     data.columns = data.columns.set_levels(['teamDLC'], level="scorer")
-    data.to_hdf(csv_path.replace(".csv", ".h5"), key="df_with_missing", mode="w")
+    data.to_hdf(csv_path.replace(".csv", "_auto.h5"), key="df_with_missing", mode="w")
 
 def get_folder_parser(path):
     if not os.path.isdir(path):
