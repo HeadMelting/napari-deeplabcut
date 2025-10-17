@@ -61,6 +61,10 @@ def get_config_reader(path):
 
     return read_config
 
+def csv_to_h5(csv_path):
+    data = pd.read_csv(csv_path, header=list(range(3)), index_col=list(range(3)))
+    data.columns = data.columns.set_levels(['teamDLC'], level="scorer")
+    data.to_hdf(csv_path.replace(".csv", ".h5"), key="df_with_missing", mode="w")
 
 def get_folder_parser(path):
     if not os.path.isdir(path):
@@ -75,6 +79,12 @@ def get_folder_parser(path):
             break
     if not images:
         raise OSError(f"No supported images were found in {path}.")
+
+    if not any(file.endswith(".h5") for file in files):
+        if'CollectedData_teamDLC.csv' in files:
+
+            csv_to_h5(os.path.join(path, 'CollectedData_teamDLC.csv'))
+            files.append("CollectedData_teamDLC.h5")
 
     layers.extend(read_images(images))
     datafile = ""
